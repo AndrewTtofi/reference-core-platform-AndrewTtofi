@@ -1,0 +1,18 @@
+name: Core Platform
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  core-platform:
+    strategy:
+      matrix:
+        target: [sandbox]
+    uses: ./.github/workflows/terragrunt.yml
+    with:
+      target: ${{ matrix.target }}

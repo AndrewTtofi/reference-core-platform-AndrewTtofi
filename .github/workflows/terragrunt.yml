@@ -1,0 +1,170 @@
+name: "Terragrunt"
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        required: true
+        type: string
+
+jobs:
+  terragrunt:
+    name: terragrunt
+    runs-on: ubuntu-latest
+
+    env:
+      TERRAGRUNT_WORKING_DIR: environments/${{ inputs.target }}/connected-kubernetes
+
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+
+    outputs:
+      iap-tunnel-command: ${{ steps.iap-tunnel-command.outputs.command }}
+      kubeconfig-generate-command: ${{ steps.kubeconfig-generate-command.outputs.command }}
+      kubeconfig-set-proxy-command: ${{ steps.kubeconfig-set-proxy-command.outputs.command }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Authenticate to Google Cloud
+        id: auth-gcloud
+        uses: google-github-actions/auth@v1
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup Terraform
+        id: setup-terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Setup Terragrunt
+        id: setup-terragrunt
+        run: |
+          sudo wget -q -O /bin/terragrunt "https://github.com/gruntwork-io/terragrunt/releases/download/v0.45.0/terragrunt_linux_amd64"
+          sudo chmod +x /bin/terragrunt
+          terragrunt -v
+
+      - name: Run terragrunt fmt
+        id: fmt
+        run: terragrunt fmt -check -recursive --terragrunt-no-auto-init
+
+      - name: Run terragrunt init
+        id: init
+        run: terragrunt init -input=false
+
+      - name: Run terragrunt validate
+        id: validate
+        run: terragrunt validate -no-color
+
+      - name: Run terragrunt plan
+        id: plan
+        run: terragrunt plan -input=false -no-color
+        continue-on-error: true
+
+      - name: Update Pull Request
+        uses: actions/github-script@v6
+        if: github.event_name == 'pull_request'
+        env:
+          PLAN: ${{ steps.plan.outputs.stdout }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `#### Terraform Format and Style 🖌\`${{ steps.fmt.outcome }}\`
+            #### Terraform Initialization ⚙️\`${{ steps.init.outcome }}\`
+            #### Terraform Validation 🤖\`${{ steps.validate.outcome }}\`
+            #### Terraform Plan 📖\`${{ steps.plan.outcome }}\`
+
+            <details><summary>Show Plan</summary>
+
+            \`\`\`terraform\n
+            ${process.env.PLAN}
+            \`\`\`
+
+            </details>
+
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+      - name: Run terragrunt apply
+        id: apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terragrunt apply -auto-approve -input=false
+
+      - name: Get IAP tunnel command
+        id: iap-tunnel-command
+        run: echo "command=$(TERRAGRUNT_TFPATH="${TERRAFORM_CLI_PATH}/terraform-bin" terragrunt output -raw iap_tunnel_command)" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Get kubeconfig generate command
+        id: kubeconfig-generate-command
+        run: echo "command=$(TERRAGRUNT_TFPATH="${TERRAFORM_CLI_PATH}/terraform-bin" terragrunt output -raw kubeconfig_generate_command)" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Get kubeconfig set proxy command
+        id: kubeconfig-set-proxy-command
+        run: echo "command=$(TERRAGRUNT_TFPATH="${TERRAFORM_CLI_PATH}/terraform-bin" terragrunt output -raw kubeconfig_set_proxy_command)" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+  test:
+    name: test
+    needs: terragrunt
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Authenticate to Google Cloud
+        id: auth-gcloud
+        uses: google-github-actions/auth@v1
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup Google Cloud SDK
+        id: setup-gcloud
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          install_components: beta,gke-gcloud-auth-plugin
+
+      - name: Setup NumPy
+        id: setup-numpy
+        # https://cloud.google.com/iap/docs/using-tcp-forwarding#increasing_the_tcp_upload_bandwidth
+        run: $(gcloud info --format="value(basic.python_location)") -m pip install numpy
+
+      - name: Setup IAP tunnel
+        id: setup-iap-tunnel
+        env:
+          IAP_TUNNEL_COMMAND: ${{ needs.terragrunt.outputs.iap-tunnel-command }}
+        run: |
+          sh -c "${IAP_TUNNEL_COMMAND} -f"
+
+      - name: Setup kubeconfig
+        id: setup-kubeconfig
+        env:
+          KUBECONFIG_GENERATE_COMMAND: ${{ needs.terragrunt.outputs.kubeconfig-generate-command }}
+          KUBECONFIG_SET_PROXY_COMMAND: ${{ needs.terragrunt.outputs.kubeconfig-set-proxy-command }}
+        run: |
+          sh -c "${KUBECONFIG_GENERATE_COMMAND}"
+          sh -c "${KUBECONFIG_SET_PROXY_COMMAND}"
+
+      - name: Test kubectl
+        id: test-kubectl
+        run: kubectl cluster-info

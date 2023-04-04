@@ -1,0 +1,4 @@
+gcp_project_id: "reference-core-platform-6nfm"
+gcp_region: "europe-west2"
+github_sa: "github-actions-sa"
+environment: "sandbox"
