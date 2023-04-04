@@ -10,6 +10,9 @@ on:
 
 jobs:
   core-platform:
+    permissions:
+      pull-requests: write
+      id-token: write
     strategy:
       matrix:
         target: [sandbox]
