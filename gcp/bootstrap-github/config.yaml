@@ -1,5 +1,5 @@
-gcp_project_id: "reference-core-platform-6nfm"
+gcp_project_id: "bootcamp-andrewttofi-dv3s"
 gcp_region: "europe-west2"
 github_sa: "github-actions-sa"
-github_user: "coreeng"
-github_repo: "reference-core-platform"
+github_user: "AndrewTtofi"
+github_repo: "reference-core-platform-AndrewTtofi"
